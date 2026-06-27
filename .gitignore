@@ -28,6 +28,9 @@ npm-debug.log*
 # Test / coverage
 coverage/
 
+# Local persistence (file-backed store; not for the repo)
+data/
+
 # TypeScript
 *.tsbuildinfo
 next-env.d.ts

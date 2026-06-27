@@ -5,6 +5,8 @@ import { ClassifyRequestSchema, ClassifyResponseSchema, type Classification } fr
 import { CATS, CATEGORY_KEYS } from "@/lib/categories";
 import { tierFromRequest } from "@/lib/tier";
 import { heuristicClassify, uncertainIndices } from "@/lib/classify-heuristic";
+import { getStore } from "@/lib/store";
+import { descSignature } from "@/lib/signature";
 
 export const runtime = "nodejs";
 
@@ -17,10 +19,8 @@ const SYSTEM =
   'Return one result per transaction, keyed by the 0-based index shown ("i"), with a ' +
   "confidence between 0 and 1.";
 
-// Batch size — far above the demo's 8, comfortably within one structured response.
 const BATCH = 25;
 
-// Structured-output schema (mirrors ClassifyResponseSchema in lib/schemas.ts).
 const CLASSIFY_FORMAT = {
   type: "json_schema",
   schema: {
@@ -54,17 +54,31 @@ export async function POST(req: Request) {
   }
 
   const tier = tierFromRequest(req);
-  const heuristic = heuristicClassify(body.transactions);
 
-  // Free tier (or pro without a key configured): local heuristics only, no API call.
+  // 1) Apply learned overrides (the moat): a previously-corrected signature wins
+  //    outright — no heuristic, no Claude.
+  const overrides = await getStore().loadOverrides();
+  const learned = new Map<number, Classification>();
+  body.transactions.forEach((t, i) => {
+    const ov = overrides.get(descSignature(t.desc));
+    if (ov) {
+      learned.set(i, { i, category: CATS[ov.category] ? ov.category : "other", confidence: 1 });
+    }
+  });
+
+  // 2) Heuristic for everything else.
+  const base = heuristicClassify(body.transactions).map((h) => learned.get(h.i) ?? h);
+  const engineSuffix = (s: string) => (learned.size ? `learned+${s}` : s);
+
+  // Free tier (or pro without a key): no API.
   if (tier !== "pro" || !hasApiKey()) {
-    return NextResponse.json({ results: heuristic, engine: "heuristic" });
+    return NextResponse.json({ results: base, engine: engineSuffix("heuristic") });
   }
 
-  // Pro: send ONLY the uncertain rows to Claude, then merge over the heuristic.
-  const uncertain = uncertainIndices(heuristic);
+  // 3) Pro: escalate ONLY the uncertain, non-learned rows to Claude.
+  const uncertain = uncertainIndices(base).filter((i) => !learned.has(i));
   if (uncertain.length === 0) {
-    return NextResponse.json({ results: heuristic, engine: "heuristic" });
+    return NextResponse.json({ results: base, engine: engineSuffix("heuristic") });
   }
 
   try {
@@ -93,7 +107,7 @@ export async function POST(req: Request) {
 
       for (const item of parsed.results) {
         const original = chunk[item.i];
-        if (!original) continue; // model returned an out-of-range index — ignore
+        if (!original) continue;
         refined.set(original.globalIndex, {
           i: original.globalIndex,
           category: CATS[item.category] ? item.category : "other",
@@ -102,11 +116,10 @@ export async function POST(req: Request) {
       }
     }
 
-    const merged = heuristic.map((h) => refined.get(h.i) ?? h);
-    return NextResponse.json({ results: merged, engine: "hybrid" });
+    const merged = base.map((b) => refined.get(b.i) ?? b);
+    return NextResponse.json({ results: merged, engine: engineSuffix("hybrid") });
   } catch (err) {
-    // Never log raw statement contents — only a terse cause. Degrade to heuristic.
     console.error("classify (pro) failed:", err instanceof Error ? err.message : "unknown");
-    return NextResponse.json({ results: heuristic, engine: "heuristic-fallback" });
+    return NextResponse.json({ results: base, engine: engineSuffix("heuristic-fallback") });
   }
 }

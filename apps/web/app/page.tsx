@@ -131,7 +131,16 @@ export default function Hisaab() {
   }
 
   function setCategory(idx: number, cat: string) {
+    const row = rows[idx];
     setRows((rs) => rs.map((r, i) => (i === idx ? { ...r, category: cat, confidence: 1 } : r)));
+    // Persist the correction (the moat) — fire-and-forget. Recurs apply automatically next time.
+    if (row?.desc) {
+      void fetch("/api/corrections", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ desc: row.desc, dir: row.dir, category: cat }),
+      }).catch(() => {});
+    }
   }
 
   function reset() {
