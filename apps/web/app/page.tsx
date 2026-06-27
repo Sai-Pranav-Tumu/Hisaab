@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
-import { Upload, Sparkles, AlertTriangle, RotateCcw, Zap, Download } from "lucide-react";
+import { Upload, Sparkles, AlertTriangle, RotateCcw, Zap, Download, CalendarPlus } from "lucide-react";
 import type { Tier } from "@/lib/tier";
 import { isBusinessExpense } from "@/lib/classify-heuristic";
+import { mergeRows } from "@/lib/merge";
 import { computeEstimate, type Basis, type TxnRow } from "@hisaab/tax";
 import { CATS } from "@/lib/categories";
 import { fmtINR, fmtDate } from "@/lib/format";
@@ -57,6 +58,7 @@ export default function Hisaab() {
   const [advancePaid, setAdvancePaid] = useState(0);
   const [tier, setTier] = useState<Tier>("free");
   const fileRef = useRef<HTMLInputElement>(null);
+  const appendRef = useRef(false); // whether the next upload merges into existing rows
 
   // Read the mock entitlement on mount (real billing swaps in later).
   useEffect(() => {
@@ -69,7 +71,8 @@ export default function Hisaab() {
     setTier(next);
   }
 
-  async function run(raw: RawTxn[], fallback: string[] | null) {
+  async function run(raw: RawTxn[], fallback: string[] | null, append = false) {
+    const hadRows = rows.length > 0;
     setPhase("working");
     setNote("");
     try {
@@ -83,21 +86,23 @@ export default function Hisaab() {
           deductible: r.dir === "debit" ? isBusinessExpense(r.desc) : undefined,
         };
       });
-      setRows(out);
+      setRows((prev) => (append && prev.length ? mergeRows([...prev, ...out]) : out));
       setPhase("done");
     } catch {
       if (fallback) {
-        setRows(
-          raw.map((r, i) => ({
-            ...r,
-            category: fallback[i] ?? "other",
-            confidence: 0.9,
-            deductible: r.dir === "debit" ? isBusinessExpense(r.desc) : undefined,
-          })),
-        );
+        const fb: TxnRow[] = raw.map((r, i) => ({
+          ...r,
+          category: fallback[i] ?? "other",
+          confidence: 0.9,
+          deductible: r.dir === "debit" ? isBusinessExpense(r.desc) : undefined,
+        }));
+        setRows((prev) => (append && prev.length ? mergeRows([...prev, ...fb]) : fb));
         setNote(
           "Couldn't reach the classifier — showing the sample with built-in categories so you can still see the math.",
         );
+        setPhase("done");
+      } else if (append && hadRows) {
+        setNote("Couldn't read that statement — kept your existing data.");
         setPhase("done");
       } else {
         setNote(
@@ -111,6 +116,8 @@ export default function Hisaab() {
   async function onFile(e: ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
     if (!f) return;
+    const append = appendRef.current;
+    const hadRows = rows.length > 0;
     setPhase("working");
     setNote("");
     try {
@@ -124,17 +131,18 @@ export default function Hisaab() {
       if (!r.ok) throw new Error(data.error || "ingest failed");
       const parsed = data.transactions;
       if (!parsed || parsed.length === 0) throw new Error("No transactions found in that file.");
-      await run(parsed, null);
+      await run(parsed, null, append);
     } catch (err) {
-      setNote(
+      const message =
         err instanceof Error && err.message
           ? err.message
-          : "Couldn't read that file. Bank-statement PDFs vary a lot; try the sample, or a text-based (non-scanned, non-password) PDF.",
-      );
-      setPhase("error");
+          : "Couldn't read that file. Bank-statement PDFs vary a lot; try the sample, or a text-based (non-scanned, non-password) PDF.";
+      setNote(append && hadRows ? `${message} Kept your existing data.` : message);
+      setPhase(append && hadRows ? "done" : "error");
     } finally {
       // allow re-selecting the same file
       e.target.value = "";
+      appendRef.current = false;
     }
   }
 
@@ -215,6 +223,36 @@ export default function Hisaab() {
     const a = document.createElement("a");
     a.href = url;
     a.download = "hisaab-tax-summary.txt";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function downloadCalendar() {
+    if (!calc || !calc.applies) return;
+    const upcoming = calc.schedule.filter((s) => s.status === "upcoming");
+    const events = upcoming.map((s) =>
+      [
+        "BEGIN:VEVENT",
+        `UID:hisaab-${s.iso}@hisaab.app`,
+        `DTSTART;VALUE=DATE:${s.iso.replace(/-/g, "")}`,
+        `SUMMARY:Advance tax due ${fmtINR(s.due)} (Hisaab estimate)`,
+        `DESCRIPTION:Cumulative ${Math.round(s.cum * 100)}% instalment for FY 2026-27 — estimate from Hisaab. Confirm with your CA and pay via the income-tax portal.`,
+        "END:VEVENT",
+      ].join("\r\n"),
+    );
+    const ics = [
+      "BEGIN:VCALENDAR",
+      "VERSION:2.0",
+      "PRODID:-//Hisaab//Advance Tax//EN",
+      "CALSCALE:GREGORIAN",
+      ...events,
+      "END:VCALENDAR",
+    ].join("\r\n");
+    const blob = new Blob([ics], { type: "text/calendar;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "hisaab-advance-tax.ics";
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -331,7 +369,10 @@ export default function Hisaab() {
             <div style={{ display: "flex", gap: 10, marginTop: 16, flexWrap: "wrap" }}>
               <button
                 className="hb-btn"
-                onClick={() => fileRef.current?.click()}
+                onClick={() => {
+                  appendRef.current = false;
+                  fileRef.current?.click();
+                }}
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -723,7 +764,50 @@ export default function Hisaab() {
                     </span>
                   )}
                 </div>
-                <div style={{ display: "flex", gap: 8 }}>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <button
+                    onClick={() => {
+                      appendRef.current = true;
+                      fileRef.current?.click();
+                    }}
+                    className="hb-btn"
+                    title="Add another statement and merge (dedupes overlaps)"
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      fontSize: 13,
+                      color: MUTED,
+                      background: "none",
+                      border: `1px solid ${LINE}`,
+                      borderRadius: 8,
+                      padding: "6px 10px",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <Upload size={13} /> Add statement
+                  </button>
+                  {calc.applies && (
+                    <button
+                      onClick={downloadCalendar}
+                      className="hb-btn"
+                      title="Download .ics reminders for the upcoming due dates"
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        fontSize: 13,
+                        color: MUTED,
+                        background: "none",
+                        border: `1px solid ${LINE}`,
+                        borderRadius: 8,
+                        padding: "6px 10px",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <CalendarPlus size={13} /> Calendar
+                    </button>
+                  )}
                   <button
                     onClick={downloadSummary}
                     className="hb-btn"
