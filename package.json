@@ -12,7 +12,8 @@
     "build": "npm run build -w packages/tax && npm run build -w apps/web",
     "start": "npm run start -w apps/web",
     "lint": "npm run lint -w apps/web",
-    "test": "npm run test -w @hisaab/tax"
+    "test": "npm run test -w @hisaab/tax",
+    "verify": "npm run test && npm run build"
   },
   "engines": {
     "node": ">=18"

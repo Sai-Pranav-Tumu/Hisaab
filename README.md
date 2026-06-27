@@ -47,7 +47,19 @@ npm install                 # installs all workspaces
 npm test                    # run the tax-engine unit tests
 npm run dev                 # start the web app at http://localhost:3000
 npm run build               # typecheck + production build
+npm run verify              # tests + build in one go (CI-style gate)
 ```
+
+### Verified
+
+- `npm test` → 11/11 tax-engine tests pass (slab boundaries, §87A cliff, marginal
+  relief, cess, advance-tax schedule).
+- `npm run build` → clean typecheck + production build of all three API routes and the UI.
+- Runtime (no API key): homepage serves, `/api/estimate` returns correct figures over HTTP,
+  and `/api/classify` + `/api/ingest` return clear 503s so the UI falls back to the built-in
+  sample categories — i.e. the sample-data flow works end-to-end without a key.
+- The live Claude path (`/api/classify`, `/api/ingest` with a real key) is wired to
+  `claude-sonnet-4-6` with structured outputs; add a key (below) to exercise it.
 
 Open http://localhost:3000 and click **"Try it with sample data"**. Without an API key it
 classifies using built-in fallback categories so you can still see the full flow and the math.
