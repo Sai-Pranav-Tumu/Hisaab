@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo, useRef, useState, type ChangeEvent } from "react";
-import { Upload, Sparkles, AlertTriangle, RotateCcw } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { Upload, Sparkles, AlertTriangle, RotateCcw, Zap } from "lucide-react";
+import type { Tier } from "@/lib/tier";
 import { computeEstimate, type Basis, type TxnRow } from "@hisaab/tax";
 import { CATS } from "@/lib/categories";
 import { fmtINR, fmtDate } from "@/lib/format";
@@ -51,7 +52,19 @@ export default function Hisaab() {
   const [note, setNote] = useState("");
   const [basis, setBasis] = useState<Basis>("presumptive");
   const [annualize, setAnnualize] = useState(true);
+  const [tier, setTier] = useState<Tier>("free");
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // Read the mock entitlement on mount (real billing swaps in later).
+  useEffect(() => {
+    setTier(/(?:^|;\s*)tier=pro(?:;|$)/.test(document.cookie) ? "pro" : "free");
+  }, []);
+
+  function toggleTier() {
+    const next: Tier = tier === "pro" ? "free" : "pro";
+    document.cookie = `tier=${next}; path=/; max-age=${60 * 60 * 24 * 365}`;
+    setTier(next);
+  }
 
   async function run(raw: RawTxn[], fallback: string[] | null) {
     setPhase("working");
@@ -180,17 +193,44 @@ export default function Hisaab() {
               Know what you owe, before the taxman does.
             </div>
           </div>
-          <div
-            style={{
-              fontFamily: MONO,
-              fontSize: 11,
-              color: MUTED,
-              border: `1px solid ${LINE}`,
-              borderRadius: 999,
-              padding: "4px 10px",
-            }}
-          >
-            FY 2026-27 · new regime
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <button
+              onClick={toggleTier}
+              className="hb-btn"
+              title={
+                tier === "pro"
+                  ? "Pro: realtime Claude analysis of any statement format. Click to switch to Free."
+                  : "Free: local + ML report, no AI calls. Click to enable Pro."
+              }
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                fontFamily: MONO,
+                fontSize: 11,
+                fontWeight: 700,
+                cursor: "pointer",
+                borderRadius: 999,
+                padding: "4px 10px",
+                border: tier === "pro" ? "none" : `1px solid ${LINE}`,
+                background: tier === "pro" ? ACCENT : SURFACE,
+                color: tier === "pro" ? "#fff" : MUTED,
+              }}
+            >
+              <Zap size={12} /> {tier === "pro" ? "PRO" : "FREE"}
+            </button>
+            <div
+              style={{
+                fontFamily: MONO,
+                fontSize: 11,
+                color: MUTED,
+                border: `1px solid ${LINE}`,
+                borderRadius: 999,
+                padding: "4px 10px",
+              }}
+            >
+              FY 2026-27 · new regime
+            </div>
           </div>
         </div>
 
@@ -232,12 +272,12 @@ export default function Hisaab() {
                   cursor: "pointer",
                 }}
               >
-                <Upload size={16} /> Upload statement (PDF)
+                <Upload size={16} /> Upload statement (PDF, CSV, Excel)
               </button>
               <input
                 ref={fileRef}
                 type="file"
-                accept="application/pdf"
+                accept="application/pdf,.csv,.tsv,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 onChange={onFile}
                 style={{ display: "none" }}
               />
@@ -281,6 +321,9 @@ export default function Hisaab() {
               </div>
             )}
             <div style={{ marginTop: 14, fontSize: 12, color: MUTED }}>
+              {tier === "pro"
+                ? "Pro: PDFs and any layout are read in realtime by Claude; CSV & Excel parse locally."
+                : "Free: CSV & Excel parse locally (no AI). PDFs and unusual layouts need Pro."}{" "}
               Nothing is stored — the statement is read once to classify transactions.
             </div>
           </div>

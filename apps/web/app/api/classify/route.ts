@@ -3,6 +3,8 @@ import { NextResponse } from "next/server";
 import { getAnthropic, hasApiKey, MODEL, messageText, parseJsonLoose } from "@/lib/anthropic";
 import { ClassifyRequestSchema, ClassifyResponseSchema, type Classification } from "@/lib/schemas";
 import { CATS, CATEGORY_KEYS } from "@/lib/categories";
+import { tierFromRequest } from "@/lib/tier";
+import { heuristicClassify, uncertainIndices } from "@/lib/classify-heuristic";
 
 export const runtime = "nodejs";
 
@@ -44,14 +46,6 @@ const CLASSIFY_FORMAT = {
 };
 
 export async function POST(req: Request) {
-  if (!hasApiKey()) {
-    // The client falls back to built-in sample categories on a non-OK response.
-    return NextResponse.json(
-      { error: "Classifier not configured (set ANTHROPIC_API_KEY)." },
-      { status: 503 },
-    );
-  }
-
   let body;
   try {
     body = ClassifyRequestSchema.parse(await req.json());
@@ -59,12 +53,30 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
   }
 
-  const client = getAnthropic();
-  const results: Classification[] = [];
+  const tier = tierFromRequest(req);
+  const heuristic = heuristicClassify(body.transactions);
+
+  // Free tier (or pro without a key configured): local heuristics only, no API call.
+  if (tier !== "pro" || !hasApiKey()) {
+    return NextResponse.json({ results: heuristic, engine: "heuristic" });
+  }
+
+  // Pro: send ONLY the uncertain rows to Claude, then merge over the heuristic.
+  const uncertain = uncertainIndices(heuristic);
+  if (uncertain.length === 0) {
+    return NextResponse.json({ results: heuristic, engine: "heuristic" });
+  }
 
   try {
-    for (let b = 0; b < body.transactions.length; b += BATCH) {
-      const chunk = body.transactions.slice(b, b + BATCH);
+    const client = getAnthropic();
+    const subset = uncertain.map((globalIndex) => ({
+      globalIndex,
+      ...body.transactions[globalIndex]!,
+    }));
+    const refined = new Map<number, Classification>();
+
+    for (let b = 0; b < subset.length; b += BATCH) {
+      const chunk = subset.slice(b, b + BATCH);
       const lines = chunk
         .map((r, j) => `${j}: "${r.desc}" | ${r.dir} | ₹${r.amount}`)
         .join("\n");
@@ -77,20 +89,24 @@ export async function POST(req: Request) {
         output_config: { format: CLASSIFY_FORMAT },
       };
       const res = (await client.messages.create(params as never)) as Anthropic.Message;
-
       const parsed = ClassifyResponseSchema.parse(parseJsonLoose(messageText(res)));
+
       for (const item of parsed.results) {
-        results.push({
-          i: b + item.i, // offset chunk-local index back to the global index
+        const original = chunk[item.i];
+        if (!original) continue; // model returned an out-of-range index — ignore
+        refined.set(original.globalIndex, {
+          i: original.globalIndex,
           category: CATS[item.category] ? item.category : "other",
-          confidence: typeof item.confidence === "number" ? item.confidence : 0.5,
+          confidence: typeof item.confidence === "number" ? item.confidence : 0.6,
         });
       }
     }
-    return NextResponse.json({ results });
+
+    const merged = heuristic.map((h) => refined.get(h.i) ?? h);
+    return NextResponse.json({ results: merged, engine: "hybrid" });
   } catch (err) {
-    // Never log raw statement contents — only a terse cause.
-    console.error("classify failed:", err instanceof Error ? err.message : "unknown");
-    return NextResponse.json({ error: "Classification failed." }, { status: 502 });
+    // Never log raw statement contents — only a terse cause. Degrade to heuristic.
+    console.error("classify (pro) failed:", err instanceof Error ? err.message : "unknown");
+    return NextResponse.json({ results: heuristic, engine: "heuristic-fallback" });
   }
 }
