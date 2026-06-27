@@ -70,6 +70,7 @@ export const TxnRowSchema = z.object({
   dir: DirectionSchema,
   category: z.string(),
   confidence: z.number(),
+  deductible: z.boolean().optional(),
 });
 
 export const EstimateRequestSchema = z.object({
@@ -78,6 +79,8 @@ export const EstimateRequestSchema = z.object({
   annualize: z.boolean(),
   /** Optional ISO date for "today"; defaults to the server's current date. */
   today: z.string().optional(),
+  /** Advance tax already paid this year. */
+  advanceTaxPaid: z.number().optional(),
 });
 export type EstimateRequest = z.infer<typeof EstimateRequestSchema>;
 

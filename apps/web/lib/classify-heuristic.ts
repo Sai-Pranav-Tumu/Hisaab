@@ -66,3 +66,13 @@ export function heuristicClassify(txns: ClassifiableTxn[]): Classification[] {
 export function uncertainIndices(results: Classification[], threshold = 0.75): number[] {
   return results.filter((r) => r.confidence < threshold).map((r) => r.i);
 }
+
+// Common deductible business expenses (SaaS, cloud, ads, professional services,
+// office). Conservative — defaults to personal unless a clear business signal.
+const BUSINESS_EXPENSE =
+  /\b(aws|amazon web|ec2|gcp|google cloud|azure|digitalocean|heroku|vercel|netlify|cloudflare|render|railway|supabase|firebase|mongodb|atlas|figma|adobe|canva|sketch|notion|slack|zoom|loom|github|gitlab|bitbucket|jetbrains|jira|linear|asana|trello|airtable|hosting|domain|godaddy|namecheap|hostinger|vps|saas|software|subscription|licen[cs]e|openai|anthropic|claude|google ads|facebook ads|meta ads|linkedin ads|advertis|marketing|coworking|wework|awfis|office rent|printer|stationery|courier|fedex|dhl|bluedart|accountant|chartered|legal|consult|contractor|payment gateway|professional tax)\b/i;
+
+/** Best-effort guess of whether a debit is a deductible business expense. */
+export function isBusinessExpense(desc: string): boolean {
+  return BUSINESS_EXPENSE.test(desc);
+}

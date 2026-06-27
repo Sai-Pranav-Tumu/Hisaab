@@ -20,6 +20,8 @@ export interface TxnRow {
   dir: Direction;
   category: string;
   confidence: number;
+  /** For debits: whether this is a deductible business expense (net-basis only). */
+  deductible?: boolean;
 }
 
 /**
@@ -80,6 +82,8 @@ export interface EstimateOptions {
   annualize: boolean;
   /** Reference "today" — injected so the schedule is deterministic and testable. */
   today: Date;
+  /** Advance tax already paid this year (reduces what's due now). */
+  advanceTaxPaid?: number;
 }
 
 export interface Estimate {
@@ -89,6 +93,10 @@ export interface Estimate {
   factor: number;
   spanDays: number;
   annualReceipts: number;
+  /** Deductible business expenses over the statement period (net basis). */
+  deductibleExpenses: number;
+  /** Deductible business expenses annualised. */
+  annualDeductibleExpenses: number;
   taxable: number;
   annualTax: number;
   applies: boolean;
@@ -96,6 +104,12 @@ export interface Estimate {
   next: ScheduleEntry;
   overdue: ScheduleEntry[];
   lowConf: number;
+  /** Advance tax already paid this year. */
+  advanceTaxPaid: number;
+  /** Next instalment net of what's already been paid. */
+  nextNetDue: number;
+  /** Total annual liability still outstanding after payments made. */
+  totalRemaining: number;
 }
 
 /**
@@ -122,8 +136,18 @@ export function computeEstimate(rows: TxnRow[], opts: EstimateOptions): Estimate
   const factor = annualize ? Math.min(12, 365 / spanDays) : 1;
   const annualReceipts = receipts * factor;
 
-  // Presumptive 44ADA taxes 50% of receipts; net basis assumes 65% profit.
-  const taxable = basis === "presumptive" ? annualReceipts * 0.5 : annualReceipts * 0.65;
+  // Deductible business expenses (net basis only).
+  const deductibleExpenses = rows
+    .filter((r) => r.dir === "debit" && r.deductible)
+    .reduce((s, r) => s + r.amount, 0);
+  const annualDeductibleExpenses = deductibleExpenses * factor;
+
+  // Presumptive 44ADA taxes 50% of receipts; net basis taxes receipts minus
+  // deductible business expenses (no expenses claimed -> all receipts taxable).
+  const taxable =
+    basis === "presumptive"
+      ? annualReceipts * 0.5
+      : Math.max(0, annualReceipts - annualDeductibleExpenses);
   const annualTax = computeAnnualTax(taxable);
   const applies = annualTax > 10000; // advance tax applies when liability > ₹10,000
 
@@ -135,6 +159,10 @@ export function computeEstimate(rows: TxnRow[], opts: EstimateOptions): Estimate
   const next = schedule.find((s) => s.status === "upcoming") ?? schedule[schedule.length - 1]!;
   const overdue = schedule.filter((s) => s.status === "past" && applies);
 
+  const advanceTaxPaid = Math.max(0, opts.advanceTaxPaid ?? 0);
+  const nextNetDue = Math.max(0, next.due - advanceTaxPaid);
+  const totalRemaining = Math.max(0, annualTax - advanceTaxPaid);
+
   return {
     totalCredits,
     receipts,
@@ -142,6 +170,8 @@ export function computeEstimate(rows: TxnRow[], opts: EstimateOptions): Estimate
     factor,
     spanDays,
     annualReceipts,
+    deductibleExpenses,
+    annualDeductibleExpenses,
     taxable,
     annualTax,
     applies,
@@ -149,5 +179,8 @@ export function computeEstimate(rows: TxnRow[], opts: EstimateOptions): Estimate
     next,
     overdue,
     lowConf: rows.filter((r) => r.confidence < 0.75 && r.dir === "credit").length,
+    advanceTaxPaid,
+    nextNetDue,
+    totalRemaining,
   };
 }

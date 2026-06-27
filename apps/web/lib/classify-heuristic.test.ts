@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { heuristicClassify, uncertainIndices } from "@/lib/classify-heuristic";
+import { heuristicClassify, uncertainIndices, isBusinessExpense } from "@/lib/classify-heuristic";
 
 describe("heuristicClassify", () => {
   it("treats every debit as a high-confidence expense", () => {
@@ -38,6 +38,15 @@ describe("heuristicClassify", () => {
     expect(big.confidence).toBeLessThan(0.75);
     expect(small.category).toBe("other");
     expect(small.confidence).toBeLessThan(0.75);
+  });
+
+  it("flags SaaS/cloud/professional debits as deductible, personal spend as not", () => {
+    expect(isBusinessExpense("Figma annual subscription USD")).toBe(true);
+    expect(isBusinessExpense("AWS cloud charges INR")).toBe(true);
+    expect(isBusinessExpense("Adobe Creative Cloud")).toBe(true);
+    expect(isBusinessExpense("Swiggy order")).toBe(false);
+    expect(isBusinessExpense("Rent UPI landlord Ramesh")).toBe(false);
+    expect(isBusinessExpense("Electricity bill TSSPDCL")).toBe(false);
   });
 
   it("uncertainIndices returns only rows below the review threshold", () => {

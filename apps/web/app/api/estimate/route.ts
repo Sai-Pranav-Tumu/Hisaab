@@ -22,6 +22,7 @@ export async function POST(req: Request) {
     basis: body.basis,
     annualize: body.annualize,
     today,
+    advanceTaxPaid: body.advanceTaxPaid,
   });
 
   if (!estimate) {

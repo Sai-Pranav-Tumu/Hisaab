@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
-import { Upload, Sparkles, AlertTriangle, RotateCcw, Zap } from "lucide-react";
+import { Upload, Sparkles, AlertTriangle, RotateCcw, Zap, Download } from "lucide-react";
 import type { Tier } from "@/lib/tier";
+import { isBusinessExpense } from "@/lib/classify-heuristic";
 import { computeEstimate, type Basis, type TxnRow } from "@hisaab/tax";
 import { CATS } from "@/lib/categories";
 import { fmtINR, fmtDate } from "@/lib/format";
@@ -53,6 +54,7 @@ export default function Hisaab() {
   const [note, setNote] = useState("");
   const [basis, setBasis] = useState<Basis>("presumptive");
   const [annualize, setAnnualize] = useState(true);
+  const [advancePaid, setAdvancePaid] = useState(0);
   const [tier, setTier] = useState<Tier>("free");
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -78,6 +80,7 @@ export default function Hisaab() {
           ...r,
           category: hit && CATS[hit.category] ? hit.category : "other",
           confidence: typeof hit?.confidence === "number" ? hit.confidence : 0.5,
+          deductible: r.dir === "debit" ? isBusinessExpense(r.desc) : undefined,
         };
       });
       setRows(out);
@@ -85,7 +88,12 @@ export default function Hisaab() {
     } catch {
       if (fallback) {
         setRows(
-          raw.map((r, i) => ({ ...r, category: fallback[i] ?? "other", confidence: 0.9 })),
+          raw.map((r, i) => ({
+            ...r,
+            category: fallback[i] ?? "other",
+            confidence: 0.9,
+            deductible: r.dir === "debit" ? isBusinessExpense(r.desc) : undefined,
+          })),
         );
         setNote(
           "Couldn't reach the classifier — showing the sample with built-in categories so you can still see the math.",
@@ -143,6 +151,10 @@ export default function Hisaab() {
     }
   }
 
+  function setDeductible(idx: number, value: boolean) {
+    setRows((rs) => rs.map((r, i) => (i === idx ? { ...r, deductible: value } : r)));
+  }
+
   function reset() {
     setRows([]);
     setPhase("idle");
@@ -152,8 +164,60 @@ export default function Hisaab() {
   // --- derived figures (shared engine in @hisaab/tax) -----------------
   const calc = useMemo(() => {
     if (rows.length === 0) return null;
-    return computeEstimate(rows, { basis, annualize, today: new Date() });
-  }, [rows, basis, annualize]);
+    return computeEstimate(rows, { basis, annualize, today: new Date(), advanceTaxPaid: advancePaid });
+  }, [rows, basis, annualize, advancePaid]);
+
+  function downloadSummary() {
+    if (!calc) return;
+    const lines = [
+      "HISAAB — Advance-tax estimate (FY 2026-27, new regime)",
+      `Generated: ${new Date().toLocaleDateString("en-IN")}`,
+      "",
+      `Income basis: ${
+        basis === "presumptive"
+          ? "Presumptive 44ADA (tax on 50% of receipts)"
+          : "Net basis (receipts minus deductible business expenses)"
+      }`,
+      `Annualised: ${annualize ? `yes (×${calc.factor.toFixed(2)} from ${Math.round(calc.spanDays)} days)` : "no"}`,
+      "",
+      `Total credits: ${fmtINR(calc.totalCredits)}`,
+      `Business income (receipts): ${fmtINR(calc.receipts)}`,
+      `Ignored (transfers/refunds/interest): ${fmtINR(calc.noise)}`,
+      `Estimated annual receipts: ${fmtINR(calc.annualReceipts)}`,
+      ...(basis === "net"
+        ? [`Deductible business expenses (annual): ${fmtINR(calc.annualDeductibleExpenses)}`]
+        : []),
+      `Taxable income: ${fmtINR(calc.taxable)}`,
+      `Estimated annual tax: ${fmtINR(calc.annualTax)}`,
+      `Advance tax already paid: ${fmtINR(calc.advanceTaxPaid)}`,
+      `Remaining for the year: ${fmtINR(calc.totalRemaining)}`,
+      "",
+      "Advance-tax schedule:",
+      ...calc.schedule.map(
+        (s) =>
+          `  ${s.label} (${Math.round(s.cum * 100)}%): ${fmtINR(s.due)}${s.status === "past" ? " [past]" : ""}`,
+      ),
+      "",
+      "Transactions:",
+      ...rows.map(
+        (r) =>
+          `  ${r.date}  ${r.dir === "credit" ? "+" : "-"}${fmtINR(r.amount)}  ${(CATS[r.category] || CATS.other).label}${
+            r.dir === "debit" ? (r.deductible ? " (business)" : " (personal)") : ""
+          }  ${r.desc ?? ""}`,
+      ),
+      "",
+      "This is an estimate to help you plan, not tax advice or a filed return. New regime; no",
+      "salaried standard deduction; excludes capital gains and other heads. Confirm with a CA",
+      "and pay through the income-tax portal.",
+    ];
+    const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "hisaab-tax-summary.txt";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
 
   return (
     <div
@@ -406,7 +470,7 @@ export default function Hisaab() {
                     className="hb-num"
                     style={{ fontSize: 52, fontWeight: 700, marginTop: 6, lineHeight: 1 }}
                   >
-                    {fmtINR(calc.next.due)}
+                    {fmtINR(calc.nextNetDue)}
                   </div>
                   <div style={{ color: "#9CA6B0", fontSize: 13, marginTop: 8 }}>
                     cumulative {Math.round(calc.next.cum * 100)}% of an estimated{" "}
@@ -414,6 +478,16 @@ export default function Hisaab() {
                       {fmtINR(calc.annualTax)}
                     </span>{" "}
                     for the year
+                    {calc.advanceTaxPaid > 0 && (
+                      <>
+                        {" "}
+                        ·{" "}
+                        <span className="hb-num" style={{ color: "#fff" }}>
+                          {fmtINR(calc.advanceTaxPaid)}
+                        </span>{" "}
+                        already paid, {fmtINR(calc.totalRemaining)} left
+                      </>
+                    )}
                   </div>
                 </>
               ) : (
@@ -582,14 +656,38 @@ export default function Hisaab() {
                     }}
                   >
                     <option value="presumptive">Presumptive 44ADA — tax on 50%</option>
-                    <option value="net">Net basis — assume 65% profit</option>
+                    <option value="net">Net basis — receipts minus expenses</option>
                   </select>
+                </Field>
+                <Field label="Advance tax already paid">
+                  <input
+                    type="number"
+                    min={0}
+                    value={advancePaid || ""}
+                    onChange={(e) => setAdvancePaid(Math.max(0, Number(e.target.value) || 0))}
+                    placeholder="₹0"
+                    style={{
+                      width: "100%",
+                      padding: "7px 8px",
+                      borderRadius: 8,
+                      border: `1px solid ${LINE}`,
+                      fontSize: 13,
+                      background: "#fff",
+                    }}
+                  />
                 </Field>
                 <Field label="Est. annual receipts">
                   <div className="hb-num" style={{ fontSize: 15, fontWeight: 700, paddingTop: 6 }}>
                     {fmtINR(calc.annualReceipts)}
                   </div>
                 </Field>
+                {basis === "net" && (
+                  <Field label="Deductible expenses (annual)">
+                    <div className="hb-num" style={{ fontSize: 15, fontWeight: 700, paddingTop: 6 }}>
+                      {fmtINR(calc.annualDeductibleExpenses)}
+                    </div>
+                  </Field>
+                )}
                 <Field label="Taxable income">
                   <div className="hb-num" style={{ fontSize: 15, fontWeight: 700, paddingTop: 6 }}>
                     {fmtINR(calc.taxable)}
@@ -625,24 +723,45 @@ export default function Hisaab() {
                     </span>
                   )}
                 </div>
-                <button
-                  onClick={reset}
-                  className="hb-btn"
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    fontSize: 13,
-                    color: MUTED,
-                    background: "none",
-                    border: `1px solid ${LINE}`,
-                    borderRadius: 8,
-                    padding: "6px 10px",
-                    cursor: "pointer",
-                  }}
-                >
-                  <RotateCcw size={13} /> Start over
-                </button>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button
+                    onClick={downloadSummary}
+                    className="hb-btn"
+                    title="Download a CA-ready text summary"
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      fontSize: 13,
+                      color: MUTED,
+                      background: "none",
+                      border: `1px solid ${LINE}`,
+                      borderRadius: 8,
+                      padding: "6px 10px",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <Download size={13} /> Summary
+                  </button>
+                  <button
+                    onClick={reset}
+                    className="hb-btn"
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      fontSize: 13,
+                      color: MUTED,
+                      background: "none",
+                      border: `1px solid ${LINE}`,
+                      borderRadius: 8,
+                      padding: "6px 10px",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <RotateCcw size={13} /> Start over
+                  </button>
+                </div>
               </div>
               <div>
                 {rows.map((r, i) => {
@@ -693,7 +812,25 @@ export default function Hisaab() {
                         {fmtINR(r.amount)}
                       </div>
                       <div style={{ justifySelf: "end", width: "100%" }}>
-                        {flag ? (
+                        {r.dir === "debit" ? (
+                          <button
+                            onClick={() => setDeductible(i, !r.deductible)}
+                            className="hb-btn"
+                            title="Toggle deductible business expense (affects the net basis)"
+                            style={{
+                              float: "right",
+                              fontSize: 12,
+                              cursor: "pointer",
+                              borderRadius: 999,
+                              padding: "3px 9px",
+                              border: `1px solid ${r.deductible ? ACCENT : LINE}`,
+                              background: r.deductible ? `${ACCENT}14` : "transparent",
+                              color: r.deductible ? ACCENT : MUTED,
+                            }}
+                          >
+                            {r.deductible ? "Business expense" : "Personal"}
+                          </button>
+                        ) : flag ? (
                           <select
                             value={r.category}
                             onChange={(e) => setCategory(i, e.target.value)}

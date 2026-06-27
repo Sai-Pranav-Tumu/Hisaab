@@ -98,12 +98,34 @@ describe("computeEstimate", () => {
     expect(est.overdue.map((s) => s.label)).toEqual(["15 Jun"]);
   });
 
-  it("net basis taxes more than presumptive (65% vs 50% of receipts)", () => {
+  it("net basis taxes receipts minus deductible business expenses", () => {
     const p = computeEstimate(SAMPLE, { basis: "presumptive", annualize: true, today })!;
+    // No deductible flags on SAMPLE -> net basis taxes the full annual receipts.
     const n = computeEstimate(SAMPLE, { basis: "net", annualize: true, today })!;
-    expect(n.taxable).toBeCloseTo(p.annualReceipts * 0.65, 6);
+    expect(n.deductibleExpenses).toBe(0);
+    expect(n.taxable).toBeCloseTo(n.annualReceipts, 6);
     expect(p.taxable).toBeCloseTo(p.annualReceipts * 0.5, 6);
     expect(n.annualTax).toBeGreaterThan(p.annualTax);
+
+    // Flag the two software subscriptions as deductible -> net taxable drops by their sum.
+    const withDeductions = SAMPLE.map((r) =>
+      r.dir === "debit" && /figma|adobe/i.test(r.desc ?? "") ? { ...r, deductible: true } : r,
+    );
+    const nd = computeEstimate(withDeductions, { basis: "net", annualize: false, today })!;
+    expect(nd.deductibleExpenses).toBe(9100 + 4230); // Figma + Adobe
+    expect(nd.taxable).toBeCloseTo(nd.annualReceipts - 13330, 6);
+  });
+
+  it("subtracts advance tax already paid from the next instalment and the remaining", () => {
+    const e = computeEstimate(SAMPLE, {
+      basis: "presumptive",
+      annualize: true,
+      today,
+      advanceTaxPaid: 20000,
+    })!;
+    expect(e.advanceTaxPaid).toBe(20000);
+    expect(e.nextNetDue).toBeCloseTo(Math.max(0, e.next.due - 20000), 6);
+    expect(e.totalRemaining).toBeCloseTo(Math.max(0, e.annualTax - 20000), 6);
   });
 
   it("annualize:false uses the period as-is (factor 1)", () => {
