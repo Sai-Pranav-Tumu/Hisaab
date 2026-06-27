@@ -10,6 +10,7 @@ import { SAMPLE, SAMPLE_FALLBACK, type RawTxn } from "@/lib/sample";
 import type { Classification } from "@/lib/schemas";
 import { Field } from "@/components/Field";
 import { Toggle } from "@/components/Toggle";
+import { AnalysisPanel } from "@/components/AnalysisPanel";
 import {
   INK,
   PAPER,
@@ -723,6 +724,9 @@ export default function Hisaab() {
                 })}
               </div>
             </div>
+
+            {/* analysis (local insights for all; AI narrative for Pro) */}
+            <AnalysisPanel rows={rows} basis={basis} annualize={annualize} tier={tier} />
 
             {/* boundary */}
             <p style={{ marginTop: 16, fontSize: 12, color: MUTED, lineHeight: 1.6 }}>

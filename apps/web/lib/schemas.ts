@@ -73,10 +73,21 @@ export const TxnRowSchema = z.object({
 });
 
 export const EstimateRequestSchema = z.object({
-  rows: z.array(TxnRowSchema).min(1),
+  rows: z.array(TxnRowSchema).min(1).max(5000),
   basis: z.enum(["presumptive", "net"]),
   annualize: z.boolean(),
   /** Optional ISO date for "today"; defaults to the server's current date. */
   today: z.string().optional(),
 });
 export type EstimateRequest = z.infer<typeof EstimateRequestSchema>;
+
+/* --- /api/analyze (Pro) ---------------------------------------------- */
+
+/** Structured-output / response shape for the Pro AI analysis. */
+export const AnalysisSchema = z.object({
+  headline: z.string(),
+  strengths: z.array(z.string()),
+  risks: z.array(z.string()),
+  actions: z.array(z.string()),
+});
+export type Analysis = z.infer<typeof AnalysisSchema>;
