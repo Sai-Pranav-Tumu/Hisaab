@@ -10,27 +10,48 @@ FY 2026-27**.
 This repo is the production-shaped MVP that grew out of a single-file browser demo
 (`reference/Hisaab.jsx`, kept as the source-of-truth for the original UI and logic).
 
-## Status — Phases 1–3 of the handoff
+## Tiers
 
-- ✅ **Phase 1 — Scaffold + port.** Monorepo, UI ported to Next.js + TypeScript, tax engine
-  extracted into a unit-tested package.
-- ✅ **Phase 2 — Server-side classification.** `/api/classify` calls Claude with a real
-  `ANTHROPIC_API_KEY` (proper batching, structured outputs). The browser never calls Anthropic.
-- ✅ **Phase 3 — Real PDF ingestion.** `/api/ingest` uses Claude's document API with a `pdf-parse`
-  text fallback and clear errors for scanned / password-protected PDFs.
-- ⏳ **Not built yet:** Phase 4 (Supabase persistence + auth, saving category corrections),
-  Phase 5 (hardened estimate: deductible-expense net basis, advance-tax-already-paid input,
-  CA-ready PDF export), Phase 6 (reminders, multi-statement merge, dashboard). Account Aggregator
-  and actual ITR filing remain out of scope (need partnerships + compliance).
+| | **Free** (normal) | **Pro** |
+|---|---|---|
+| Engine | Local heuristics + (planned) ML — **no API calls** | Claude API, realtime, format-robust |
+| Statements | Structured CSV/Excel parsed locally | PDF + CSV + Excel, **any layout** (B2B/B2C, any bank) |
+| Classification | Heuristic rules | Heuristic + Claude on the *uncertain rows only* |
+| Analysis | Quantitative insights report | + realtime AI narrative (strengths/risks/actions) |
+
+Claude is used **only when necessary** — even on Pro, the local heuristic and learned
+corrections run first, and only ambiguous rows are sent to the model. Tier is a mock cookie
+(`tier=pro`) today; real billing (Razorpay/Stripe) plugs in later. Free runs entirely without a
+key; Pro lights up when `ANTHROPIC_API_KEY` is set.
+
+## Status — Phases 1–6 complete ✅
+
+- **Phase 1 — Scaffold + port.** Monorepo, UI ported to Next.js + TypeScript, tax engine in a
+  unit-tested package.
+- **Phase 2 — Server-side classification.** `/api/classify`; the browser never calls Anthropic.
+- **Phase 3 — Real ingestion.** `/api/ingest` for PDF + CSV + Excel; clear errors for scanned /
+  password PDFs.
+- **Phase 4 — Persistence + the moat.** Every category correction is saved (swappable local store)
+  and reused to pre-classify recurring transactions — improving accuracy and cutting API over time.
+- **Phase 5 — Hardened estimate.** Real net basis from deductible business expenses (per-row
+  Business/Personal toggle), an "advance tax already paid" input, and a CA-ready text export.
+- **Phase 6 — Polish.** Multi-statement merge (de-dupes overlaps across the year) and a downloadable
+  `.ics` calendar of upcoming due dates.
+- ⏳ **Next (gated):** the **ML model** for the free tier (the planned final phase). Out of scope:
+  email reminders (need a provider), real auth/billing, Supabase/Postgres swap, Account Aggregator,
+  and actual ITR filing.
 
 ## Layout
 
 ```
 hisaab/
   apps/web/        Next.js (App Router, TS) — UI + API route handlers
-    app/api/classify   POST transactions -> {category, confidence}[]   (Claude, server-side)
-    app/api/ingest     POST a PDF -> normalized transactions            (Claude doc API + pdf-parse)
-    app/api/estimate   POST classified txns + assumptions -> tax + schedule
+    app/api/ingest       POST PDF/CSV/XLSX -> normalized transactions (local parse or Claude)
+    app/api/classify     POST transactions -> {category, confidence}[] (learned + heuristic + Claude)
+    app/api/estimate     POST classified txns + assumptions -> tax + schedule
+    app/api/analyze      POST txns -> AI narrative from computed figures (Pro)
+    app/api/corrections  POST a category correction (the moat)
+    lib/                 tier, heuristic classifier, parsers, insights, store, signature, merge
   packages/tax/    FY 2026-27 tax engine + estimate math (framework-agnostic, unit-tested)
   reference/       the original single-file demo (Hisaab.jsx)
 ```
@@ -52,14 +73,15 @@ npm run verify              # tests + build in one go (CI-style gate)
 
 ### Verified
 
-- `npm test` → 11/11 tax-engine tests pass (slab boundaries, §87A cliff, marginal
-  relief, cess, advance-tax schedule).
-- `npm run build` → clean typecheck + production build of all three API routes and the UI.
-- Runtime (no API key): homepage serves, `/api/estimate` returns correct figures over HTTP,
-  and `/api/classify` + `/api/ingest` return clear 503s so the UI falls back to the built-in
-  sample categories — i.e. the sample-data flow works end-to-end without a key.
-- The live Claude path (`/api/classify`, `/api/ingest` with a real key) is wired to
-  `claude-sonnet-4-6` with structured outputs; add a key (below) to exercise it.
+- `npm test` → **39 tests pass** (12 tax-engine: slabs, §87A cliff, marginal relief, cess,
+  schedule, net-basis deductions, advance-tax-paid; 27 web: classifier, parsers, insights,
+  signature, store fold, merge).
+- `npm run build` → clean typecheck + production build (6 API routes + UI).
+- Runtime (no API key): the full **free-tier** flow works — local CSV/XLSX parsing, heuristic
+  classification, correct estimate math over HTTP, the correction→learning loop, and graceful
+  Pro fallbacks.
+- The live Claude paths (`/api/classify`, `/api/ingest`, `/api/analyze` with a real key) are wired
+  to `claude-sonnet-4-6` with structured outputs; add a key (below) to exercise Pro.
 
 Open http://localhost:3000 and click **"Try it with sample data"**. Without an API key it
 classifies using built-in fallback categories so you can still see the full flow and the math.
@@ -81,8 +103,9 @@ Get a key at <https://console.anthropic.com/settings/keys>. Classification/extra
 
 - **Secrets:** `ANTHROPIC_API_KEY` is server-side only and lives in `apps/web/.env.local`.
   `.gitignore` excludes all `.env*` files — never commit a real key.
-- **PII:** bank statements are sensitive. The API routes don't log raw statement contents, and
-  nothing is persisted yet (persistence arrives in Phase 4).
+- **PII:** bank statements are sensitive. The API routes don't log raw statement contents. The
+  only thing persisted is the **category-correction log** (description signatures + category), in a
+  local git-ignored `data/` store; the Pro AI analysis is sent only *computed figures*, not raw rows.
 - **Tax accuracy:** the new-regime FY 2026-27 math is copied verbatim from the reference and
   locked by unit tests. The UI keeps the "estimate, not tax advice" disclaimer and states its
   assumptions (new regime, no salaried standard deduction, excludes capital gains and other heads).
